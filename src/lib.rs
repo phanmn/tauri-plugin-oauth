@@ -88,9 +88,9 @@ pub fn start_with_config<F: FnMut(String) + Send + 'static>(
                         // Using an empty string to communicate that a shutdown was requested.
                         if !content.is_empty() {
                             handler(content);
+                        } else {
+                            break;
                         }
-                        // TODO: Check if exiting here is always okay.
-                        break;
                     }
                 }
                 Err(err) => {
