@@ -1,6 +1,7 @@
+// https://github.com/FabianLars/tauri-plugin-oauth/blob/v2/src/lib.rs
 use std::{
     borrow::Cow,
-    io::{Read, Write},
+    io::{prelude::*, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     thread,
 };
@@ -27,9 +28,9 @@ const EXIT: [u8; 4] = [1, 3, 3, 7];
 /// # Panics
 ///
 /// The seperate server thread can panic if its unable to send the html response to the client. This may change after more real world testing.
-pub fn start<F: FnMut(String) + Send + 'static>(handler: F) -> Result<u16, std::io::Error> {
-    start_with_config(OauthConfig::default(), handler)
-}
+// pub fn start<F: FnMut(String) + Send + 'static>(handler: F) -> Result<u16, std::io::Error> {
+//     start_with_config(OauthConfig::default(), handler)
+// }
 
 /// The optional server config.
 #[derive(Default, serde::Deserialize)]
@@ -83,10 +84,10 @@ pub fn start_with_config<F: FnMut(String) + Send + 'static>(
         for conn in listener.incoming() {
             match conn {
                 Ok(conn) => {
-                    if let Some(url) = handle_connection(conn, config.response.as_deref(), port) {
+                    if let Some(content) = handle_connection(conn) {
                         // Using an empty string to communicate that a shutdown was requested.
-                        if !url.is_empty() {
-                            handler(url);
+                        if !content.is_empty() {
+                            handler(content);
                         }
                         // TODO: Check if exiting here is always okay.
                         break;
@@ -102,70 +103,61 @@ pub fn start_with_config<F: FnMut(String) + Send + 'static>(
     Ok(port)
 }
 
-fn handle_connection(mut conn: TcpStream, response: Option<&str>, port: u16) -> Option<String> {
+fn handle_connection(mut conn: TcpStream) -> Option<String> {
     let mut buffer = [0; 4048];
-    if let Err(io_err) = conn.read(&mut buffer) {
+    let read_result = conn.read(&mut buffer);
+    if let Err(io_err) = &read_result {
         log::error!("Error reading incoming connection: {}", io_err.to_string());
     };
-    if buffer[..4] == EXIT {
-        return Some(String::new());
-    }
 
-    let mut headers = [httparse::EMPTY_HEADER; 16];
+    let read_byte = read_result.unwrap();
+
+    let mut headers = [httparse::EMPTY_HEADER; 100];
     let mut request = httparse::Request::new(&mut headers);
-    request.parse(&buffer).ok()?;
+    request.parse(&buffer).ok();
 
-    let path = request.path.unwrap_or_default();
+    let path = request
+        .path
+        .map(|v| v.to_string().to_owned())
+        .unwrap_or("".to_string());
 
     if path == "/exit" {
         return Some(String::new());
     };
 
-    let mut is_localhost = false;
-
+    let mut content_length = 0;
     for header in &headers {
-        if header.name == "Full-Url" {
-            return Some(String::from_utf8_lossy(header.value).to_string());
-        } else if header.name == "Host" {
-            is_localhost = String::from_utf8_lossy(header.value).starts_with("localhost");
+        if header.name == "Content-Length" {
+            content_length = String::from_utf8_lossy(header.value)
+                .to_string()
+                .parse()
+                .unwrap();
         }
     }
-    if path == "/cb" {
-        log::error!(
-            "Client fetched callback path but the request didn't contain the expected header."
-        );
+
+    let mut request_body = None;
+    if content_length > 0 && path == "/submit" {
+        let request_string = String::from_utf8_lossy(&buffer[..read_byte]);
+        let parts: Vec<&str> = request_string.splitn(2, "\r\n\r\n").collect();
+        let mut content = parts.get(1).unwrap_or(&"").to_string();
+        let not_read_bytes = content_length - content.len();
+        if not_read_bytes > 0 {
+            let mut body_buffer = vec![0; not_read_bytes];
+            conn.read_exact(&mut body_buffer).unwrap();
+            let missing = String::from_utf8_lossy(&body_buffer).to_string();
+            content.push_str(&missing);
+        }
+
+        if content.is_empty() == false {
+            request_body = Some(content);
+        }
     }
 
-    let script = format!(
-        r#"<script>fetch("http://{}:{}/cb",{{headers:{{"Full-Url":window.location.href}}}})</script>"#,
-        if is_localhost {
-            "localhost"
-        } else {
-            "127.0.0.1"
-        },
-        port
-    );
-    let response = match response {
-        Some(s) if s.contains("<head>") => s.replace("<head>", &format!("<head>{}", script)),
-        Some(s) if s.contains("<body>") => {
-            s.replace("<body>", &format!("<head>{}</head><body>", script))
-        }
-        Some(s) => {
-            log::warn!(
-                "`response` does not contain a body or head element. Prepending a head element..."
-            );
-            format!("<head>{}</head>{}", script, s)
-        }
-        None => format!(
-            "<html><head>{}</head><body>Please return to the app.</body></html>",
-            script
-        ),
-    };
+    let response = "true".to_string();
 
-    // TODO: Test if unwrapping here is safe (enough).
     conn.write_all(
         format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json; charset=utf-8\r\ncache-control: max-age=0, private, must-revalidate\r\n\r\n{}",
             response.len(),
             response
         )
@@ -174,7 +166,7 @@ fn handle_connection(mut conn: TcpStream, response: Option<&str>, port: u16) -> 
     .unwrap();
     conn.flush().unwrap();
 
-    None
+    request_body
 }
 
 /// Stops the currently running server behind the provided port without executing the handler.
@@ -197,7 +189,7 @@ mod plugin_impl {
     use tauri::{Manager, Runtime, Window};
 
     #[tauri::command]
-    pub(crate) fn start<R: Runtime>(
+    pub fn start<R: Runtime>(
         window: Window<R>,
         config: Option<super::OauthConfig>,
     ) -> Result<u16, String> {
@@ -211,24 +203,17 @@ mod plugin_impl {
                 .map(|v| v.as_str().unwrap().to_string().into());
         }
 
-        crate::start_with_config(config, move |url| match url::Url::parse(&url) {
-            Ok(_) => {
-                if let Err(emit_err) = window.emit("oauth://url", url) {
-                    log::error!("Error emitting oauth://url event: {}", emit_err)
-                };
-            }
-            Err(err) => {
-                if let Err(emit_err) = window.emit("oauth://invalid-url", err.to_string()) {
-                    log::error!("Error emitting oauth://invalid-url event: {}", emit_err)
-                };
-            }
+        super::start_with_config(config, move |content| {
+            if let Err(emit_err) = window.emit("oauth://response", content) {
+                log::error!("Error emitting oauth://response event: {}", emit_err)
+            };
         })
         .map_err(|err| err.to_string())
     }
 
     #[tauri::command]
-    pub(crate) fn cancel(port: u16) -> Result<(), String> {
-        crate::cancel(port).map_err(|err| err.to_string())
+    pub fn cancel(port: u16) -> Result<(), String> {
+        super::cancel(port).map_err(|err| err.to_string())
     }
 }
 
