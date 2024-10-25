@@ -186,7 +186,7 @@ pub fn cancel(port: u16) -> Result<(), std::io::Error> {
 }
 
 mod plugin_impl {
-    use tauri::{Manager, Runtime, Window};
+    use tauri::{Emitter, Manager, Runtime, Window};
 
     #[tauri::command]
     pub fn start<R: Runtime>(
