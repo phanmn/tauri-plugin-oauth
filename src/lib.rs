@@ -157,7 +157,7 @@ fn handle_connection(mut conn: TcpStream) -> Option<String> {
 
     conn.write_all(
         format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json; charset=utf-8\r\ncache-control: max-age=0, private, must-revalidate\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json; charset=utf-8\r\ncache-control: max-age=0, private, must-revalidate\r\n\r\n{}",
             response.len(),
             response
         )
